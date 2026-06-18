@@ -901,14 +901,33 @@
         esploader = new ESPLoader({
           transport,
           baudrate: baud,
+          romBaudrate: 115200,
           terminal,
           debugLogging: false,
         });
 
         logChip('Connecting to chip...');
-        chipName = await esploader.main();
-
-        logSuccess(`Connected to: ${chipName}`);
+        try {
+          chipName = await esploader.main();
+          // main() ya cambia el baudrate automáticamente si baudrate !== romBaudrate
+          logSuccess(`Connected to: ${chipName}`);
+        } catch (err) {
+          // Si falla (ej. por cambio de baudrate inestable), reintentar a 115200
+          logWarning(`Connection at ${baud} baud failed: ${err.message}`);
+          logInfo('Retrying at 115200 baud...');
+          try { await transport.disconnect(); } catch (e) { /* ignore */ }
+          transport = new Transport(port, false);
+          esploader = new ESPLoader({
+            transport,
+            baudrate: 115200,
+            romBaudrate: 115200,
+            terminal,
+            debugLogging: false,
+          });
+          chipName = await esploader.main();
+          logSuccess(`Connected to: ${chipName} @ 115200 baud`);
+          logWarning('Use a lower baud rate (115200 or 230400) for better stability.');
+        }
 
         // Gather chip info
         let mac = '—';
