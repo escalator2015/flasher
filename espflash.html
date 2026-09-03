@@ -834,6 +834,16 @@
       progressCard.style.display = 'none';
       progressFill.style.width = '0%';
     }
+    async function restoreFlasherBaudrate() {
+      if (!transport || !esploader || transport.baudrate === esploader.baudrate) return;
+
+      const baud = esploader.baudrate;
+      logInfo(`Restoring flasher baud rate to ${baud}...`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await transport.disconnect();
+      await transport.connect(baud);
+      transport.readLoop();
+    }
 
     // ─── UI State ────────────────────────────────────────────
     function setConnectedState(connected) {
@@ -875,6 +885,17 @@
       return line;
     }
 
+    async function stopMonitorBeforeOperation() {
+      if (!isMonitorRunning) return;
+
+      logInfo('Stopping serial monitor before operation...');
+      monitorClosed = true;
+      btnMonitorStop.disabled = true;
+      while (isMonitorRunning) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }
+
     // ─── Tabs ────────────────────────────────────────────────
     document.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', () => {
@@ -906,28 +927,11 @@
           debugLogging: false,
         });
 
-        logChip('Connecting to chip...');
-        try {
-          chipName = await esploader.main();
-          // main() ya cambia el baudrate automáticamente si baudrate !== romBaudrate
-          logSuccess(`Connected to: ${chipName}`);
-        } catch (err) {
-          // Si falla (ej. por cambio de baudrate inestable), reintentar a 115200
-          logWarning(`Connection at ${baud} baud failed: ${err.message}`);
-          logInfo('Retrying at 115200 baud...');
-          try { await transport.disconnect(); } catch (e) { /* ignore */ }
-          transport = new Transport(port, false);
-          esploader = new ESPLoader({
-            transport,
-            baudrate: 115200,
-            romBaudrate: 115200,
-            terminal,
-            debugLogging: false,
-          });
-          chipName = await esploader.main();
-          logSuccess(`Connected to: ${chipName} @ 115200 baud`);
-          logWarning('Use a lower baud rate (115200 or 230400) for better stability.');
-        }
+        logInfo('Manual bootloader mode: hold BOOT/IO0, press and release EN/RESET, then release BOOT.');
+        logChip('Connecting to chip without DTR/RTS reset...');
+        chipName = await esploader.main('no_reset');
+        // main() ya cambia el baudrate automáticamente si baudrate !== romBaudrate
+        logSuccess(`Connected to: ${chipName}`);
 
         // Gather chip info
         let mac = '—';
@@ -985,7 +989,8 @@
         logInfo('Ready for flash operations.');
 
       } catch (err) {
-        logError('Connection failed: ' + err.message);
+        logError(`Connection failed (${err.name || 'Error'}): ${err.message}`);
+        logInfo('Verify that the board is in download mode and that no other program is using the CP210x port.');
         console.error(err);
         // ── Cleanup: close the port so it can be reused ──
         try {
@@ -1039,6 +1044,8 @@
 
       btnFlash.disabled = true;
       try {
+        await stopMonitorBeforeOperation();
+        await restoreFlasherBaudrate();
         const data = new Uint8Array(await file.arrayBuffer());
         const flashMode = $id('flashMode').value;
         const flashFreq = $id('flashFreq').value;
@@ -1069,12 +1076,9 @@
           },
         });
 
-        showProgress('Flashing complete!', 100);
+        showProgress('Manual reset required', 0);
         logSuccess('Firmware flashed successfully!');
-
-        logInfo('Resetting chip...');
-        await esploader.after('hard_reset');
-        logInfo('Chip reset. Done!');
+        logWarning('Flash complete. Press and release EN/RESET, or power-cycle the board, to start the new firmware.');
 
       } catch (err) {
         logError('Flash failed: ' + err.message);
@@ -1117,6 +1121,8 @@
 
       btnReadFlash.disabled = true;
       try {
+        await stopMonitorBeforeOperation();
+        await restoreFlasherBaudrate();
         const addr = parseInt($id('readAddress').value, 16);
         let size = parseInt($id('readSize').value, 10);
 
@@ -1251,6 +1257,8 @@
 
       btnErase.disabled = true;
       try {
+        await stopMonitorBeforeOperation();
+        await restoreFlasherBaudrate();
         if (mode === 'full') {
           logWarning('Erasing entire flash... (this may take a while)');
           showProgress('Erasing flash...', 50);
@@ -1356,12 +1364,7 @@
     });
 
     btnMonitorStop.addEventListener('click', async () => {
-      monitorClosed = true;
-      isMonitorRunning = false;
-      btnMonitorStart.disabled = false;
-      btnMonitorStop.disabled = true;
-      monitorLabel.innerHTML = '📡 Serial Monitor';
-      monitorCard.classList.remove('monitor-active');
+      await stopMonitorBeforeOperation();
       logWarning('Monitor stopped.');
     });
 
